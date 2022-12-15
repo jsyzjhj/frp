@@ -15,25 +15,24 @@
 package sub
 
 import (
-	"context"
 	"fmt"
-	"io/ioutil"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
-	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
-	ini "github.com/vaughan0/go-ini"
 
 	"github.com/fatedier/frp/client"
-	"github.com/fatedier/frp/g"
-	"github.com/fatedier/frp/models/config"
-	"github.com/fatedier/frp/utils/log"
-	"github.com/fatedier/frp/utils/version"
+	"github.com/fatedier/frp/pkg/auth"
+	"github.com/fatedier/frp/pkg/config"
+	"github.com/fatedier/frp/pkg/util/log"
+	"github.com/fatedier/frp/pkg/util/version"
 )
 
 const (
@@ -43,18 +42,20 @@ const (
 
 var (
 	cfgFile     string
+	cfgDir      string
 	showVersion bool
 
-	serverAddr string
-	user       string
-	protocol   string
-	token      string
-	logLevel   string
-	logFile    string
-	logMaxDays int
+	serverAddr      string
+	user            string
+	protocol        string
+	token           string
+	logLevel        string
+	logFile         string
+	logMaxDays      int
+	disableLogColor bool
 
 	proxyName         string
-	localIp           string
+	localIP           string
 	localPort         int
 	remotePort        int
 	useEncryption     bool
@@ -67,14 +68,30 @@ var (
 	hostHeaderRewrite string
 	role              string
 	sk                string
+	multiplexer       string
 	serverName        string
 	bindAddr          string
 	bindPort          int
+
+	tlsEnable bool
 )
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&cfgFile, "", "c", "./frpc.ini", "config file of frpc")
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "./frpc.ini", "config file of frpc")
+	rootCmd.PersistentFlags().StringVarP(&cfgDir, "config_dir", "", "", "config directory, run one frpc service for each file in config directory")
 	rootCmd.PersistentFlags().BoolVarP(&showVersion, "version", "v", false, "version of frpc")
+}
+
+func RegisterCommonFlags(cmd *cobra.Command) {
+	cmd.PersistentFlags().StringVarP(&serverAddr, "server_addr", "s", "127.0.0.1:7000", "frp server's address")
+	cmd.PersistentFlags().StringVarP(&user, "user", "u", "", "user")
+	cmd.PersistentFlags().StringVarP(&protocol, "protocol", "p", "tcp", "tcp or kcp or websocket")
+	cmd.PersistentFlags().StringVarP(&token, "token", "t", "", "auth token")
+	cmd.PersistentFlags().StringVarP(&logLevel, "log_level", "", "info", "log level")
+	cmd.PersistentFlags().StringVarP(&logFile, "log_file", "", "console", "console or file path")
+	cmd.PersistentFlags().IntVarP(&logMaxDays, "log_max_days", "", 3, "log file reversed days")
+	cmd.PersistentFlags().BoolVarP(&disableLogColor, "disable_log_color", "", false, "disable log color in console")
+	cmd.PersistentFlags().BoolVarP(&tlsEnable, "tls_enable", "", false, "enable frpc tls")
 }
 
 var rootCmd = &cobra.Command{
@@ -83,6 +100,32 @@ var rootCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if showVersion {
 			fmt.Println(version.Full())
+			return nil
+		}
+
+		// If cfgDir is not empty, run multiple frpc service for each config file in cfgDir.
+		// Note that it's only designed for testing. It's not guaranteed to be stable.
+		if cfgDir != "" {
+			var wg sync.WaitGroup
+			_ = filepath.WalkDir(cfgDir, func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return nil
+				}
+				if d.IsDir() {
+					return nil
+				}
+				wg.Add(1)
+				time.Sleep(time.Millisecond)
+				go func() {
+					defer wg.Done()
+					err := runClient(path)
+					if err != nil {
+						fmt.Printf("frpc service error for config file [%s]\n", path)
+					}
+				}()
+				return nil
+			})
+			wg.Wait()
 			return nil
 		}
 
@@ -102,120 +145,86 @@ func Execute() {
 	}
 }
 
-func handleSignal(svr *client.Service) {
-	ch := make(chan os.Signal)
+func handleSignal(svr *client.Service, doneCh chan struct{}) {
+	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
-	svr.Close()
-	time.Sleep(250 * time.Millisecond)
-	os.Exit(0)
+	svr.GracefulClose(500 * time.Millisecond)
+	close(doneCh)
 }
 
-func parseClientCommonCfg(fileType int, filePath string) (err error) {
-	if fileType == CfgFileTypeIni {
-		err = parseClientCommonCfgFromIni(filePath)
-	} else if fileType == CfgFileTypeCmd {
-		err = parseClientCommonCfgFromCmd()
-	}
+func parseClientCommonCfgFromCmd() (cfg config.ClientCommonConf, err error) {
+	cfg = config.GetDefaultClientConf()
+
+	ipStr, portStr, err := net.SplitHostPort(serverAddr)
 	if err != nil {
+		err = fmt.Errorf("invalid server_addr: %v", err)
 		return
 	}
 
-	g.GlbClientCfg.CfgFile = cfgFile
-
-	err = g.GlbClientCfg.ClientCommonConf.Check()
+	cfg.ServerAddr = ipStr
+	cfg.ServerPort, err = strconv.Atoi(portStr)
 	if err != nil {
+		err = fmt.Errorf("invalid server_addr: %v", err)
+		return
+	}
+
+	cfg.User = user
+	cfg.Protocol = protocol
+	cfg.LogLevel = logLevel
+	cfg.LogFile = logFile
+	cfg.LogMaxDays = int64(logMaxDays)
+	cfg.DisableLogColor = disableLogColor
+
+	// Only token authentication is supported in cmd mode
+	cfg.ClientConfig = auth.GetDefaultClientConf()
+	cfg.Token = token
+	cfg.TLSEnable = tlsEnable
+
+	cfg.Complete()
+	if err = cfg.Validate(); err != nil {
+		err = fmt.Errorf("parse config error: %v", err)
 		return
 	}
 	return
 }
 
-func parseClientCommonCfgFromIni(filePath string) (err error) {
-	b, err := ioutil.ReadFile(filePath)
+func runClient(cfgFilePath string) error {
+	cfg, pxyCfgs, visitorCfgs, err := config.ParseClientConfig(cfgFilePath)
 	if err != nil {
 		return err
 	}
-	content := string(b)
-
-	cfg, err := config.UnmarshalClientConfFromIni(&g.GlbClientCfg.ClientCommonConf, content)
-	if err != nil {
-		return err
-	}
-	g.GlbClientCfg.ClientCommonConf = *cfg
-	return
+	return startService(cfg, pxyCfgs, visitorCfgs, cfgFilePath)
 }
 
-func parseClientCommonCfgFromCmd() (err error) {
-	strs := strings.Split(serverAddr, ":")
-	if len(strs) < 2 {
-		err = fmt.Errorf("invalid server_addr")
-		return
+func startService(
+	cfg config.ClientCommonConf,
+	pxyCfgs map[string]config.ProxyConf,
+	visitorCfgs map[string]config.VisitorConf,
+	cfgFile string,
+) (err error) {
+	log.InitLog(cfg.LogWay, cfg.LogFile, cfg.LogLevel,
+		cfg.LogMaxDays, cfg.DisableLogColor)
+
+	if cfgFile != "" {
+		log.Trace("start frpc service for config file [%s]", cfgFile)
+		defer log.Trace("frpc service for config file [%s] stopped", cfgFile)
 	}
-	if strs[0] != "" {
-		g.GlbClientCfg.ServerAddr = strs[0]
-	}
-	g.GlbClientCfg.ServerPort, err = strconv.Atoi(strs[1])
-	if err != nil {
-		err = fmt.Errorf("invalid server_addr")
+	svr, errRet := client.NewService(cfg, pxyCfgs, visitorCfgs, cfgFile)
+	if errRet != nil {
+		err = errRet
 		return
 	}
 
-	g.GlbClientCfg.User = user
-	g.GlbClientCfg.Protocol = protocol
-	g.GlbClientCfg.Token = token
-	g.GlbClientCfg.LogLevel = logLevel
-	g.GlbClientCfg.LogFile = logFile
-	g.GlbClientCfg.LogMaxDays = int64(logMaxDays)
-	if logFile == "console" {
-		g.GlbClientCfg.LogWay = "console"
-	} else {
-		g.GlbClientCfg.LogWay = "file"
-	}
-	return nil
-}
-
-func runClient(cfgFilePath string) (err error) {
-	err = parseClientCommonCfg(CfgFileTypeIni, cfgFilePath)
-	if err != nil {
-		return
-	}
-
-	conf, err := ini.LoadFile(cfgFilePath)
-	if err != nil {
-		return err
-	}
-
-	pxyCfgs, visitorCfgs, err := config.LoadAllConfFromIni(g.GlbClientCfg.User, conf, g.GlbClientCfg.Start)
-	if err != nil {
-		return err
-	}
-
-	err = startService(pxyCfgs, visitorCfgs)
-	return
-}
-
-func startService(pxyCfgs map[string]config.ProxyConf, visitorCfgs map[string]config.VisitorConf) (err error) {
-	log.InitLog(g.GlbClientCfg.LogWay, g.GlbClientCfg.LogFile, g.GlbClientCfg.LogLevel, g.GlbClientCfg.LogMaxDays)
-	if g.GlbClientCfg.DnsServer != "" {
-		s := g.GlbClientCfg.DnsServer
-		if !strings.Contains(s, ":") {
-			s += ":53"
-		}
-		// Change default dns server for frpc
-		net.DefaultResolver = &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				return net.Dial("udp", s)
-			},
-		}
-	}
-	svr := client.NewService(pxyCfgs, visitorCfgs)
-
+	kcpDoneCh := make(chan struct{})
 	// Capture the exit signal if we use kcp.
-	if g.GlbClientCfg.Protocol == "kcp" {
-		go handleSignal(svr)
+	if cfg.Protocol == "kcp" {
+		go handleSignal(svr, kcpDoneCh)
 	}
 
 	err = svr.Run()
+	if err == nil && cfg.Protocol == "kcp" {
+		<-kcpDoneCh
+	}
 	return
 }
