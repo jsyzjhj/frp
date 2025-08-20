@@ -15,6 +15,9 @@
 package v1
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/samber/lo"
 
 	"github.com/fatedier/frp/pkg/config/types"
@@ -67,6 +70,8 @@ type ServerConfig struct {
 	// value is "", a default page will be displayed.
 	Custom404Page string `json:"custom404Page,omitempty"`
 
+	SSHTunnelGateway SSHTunnelGateway `json:"sshTunnelGateway,omitempty"`
+
 	WebServer WebServerConfig `json:"webServer,omitempty"`
 	// EnablePrometheus will export prometheus metrics on webserver address
 	// in /metrics api.
@@ -96,11 +101,14 @@ type ServerConfig struct {
 	HTTPPlugins []HTTPPluginOptions `json:"httpPlugins,omitempty"`
 }
 
-func (c *ServerConfig) Complete() {
-	c.Auth.Complete()
+func (c *ServerConfig) Complete() error {
+	if err := c.Auth.Complete(); err != nil {
+		return err
+	}
 	c.Log.Complete()
 	c.Transport.Complete()
 	c.WebServer.Complete()
+	c.SSHTunnelGateway.Complete()
 
 	c.BindAddr = util.EmptyOr(c.BindAddr, "0.0.0.0")
 	c.BindPort = util.EmptyOr(c.BindPort, 7000)
@@ -117,17 +125,31 @@ func (c *ServerConfig) Complete() {
 	c.UserConnTimeout = util.EmptyOr(c.UserConnTimeout, 10)
 	c.UDPPacketSize = util.EmptyOr(c.UDPPacketSize, 1500)
 	c.NatHoleAnalysisDataReserveHours = util.EmptyOr(c.NatHoleAnalysisDataReserveHours, 7*24)
+	return nil
 }
 
 type AuthServerConfig struct {
 	Method           AuthMethod           `json:"method,omitempty"`
 	AdditionalScopes []AuthScope          `json:"additionalScopes,omitempty"`
 	Token            string               `json:"token,omitempty"`
+	TokenSource      *ValueSource         `json:"tokenSource,omitempty"`
 	OIDC             AuthOIDCServerConfig `json:"oidc,omitempty"`
 }
 
-func (c *AuthServerConfig) Complete() {
+func (c *AuthServerConfig) Complete() error {
 	c.Method = util.EmptyOr(c.Method, "token")
+
+	// Resolve tokenSource during configuration loading
+	if c.Method == AuthMethodToken && c.TokenSource != nil {
+		token, err := c.TokenSource.Resolve(context.Background())
+		if err != nil {
+			return fmt.Errorf("failed to resolve auth.tokenSource: %w", err)
+		}
+		// Move the resolved token to the Token field and clear TokenSource
+		c.Token = token
+		c.TokenSource = nil
+	}
+	return nil
 }
 
 type AuthOIDCServerConfig struct {
@@ -152,7 +174,7 @@ type ServerTransportConfig struct {
 	// is true.
 	// $HideFromDoc
 	TCPMux *bool `json:"tcpMux,omitempty"`
-	// TCPMuxKeepaliveInterval specifies the keep alive interval for TCP stream multipler.
+	// TCPMuxKeepaliveInterval specifies the keep alive interval for TCP stream multiplier.
 	// If TCPMux is true, heartbeat of application layer is unnecessary because it can only rely on heartbeat in TCPMux.
 	TCPMuxKeepaliveInterval int64 `json:"tcpMuxKeepaliveInterval,omitempty"`
 	// TCPKeepAlive specifies the interval between keep-alive probes for an active network connection between frpc and frps.
@@ -173,10 +195,15 @@ type ServerTransportConfig struct {
 
 func (c *ServerTransportConfig) Complete() {
 	c.TCPMux = util.EmptyOr(c.TCPMux, lo.ToPtr(true))
-	c.TCPMuxKeepaliveInterval = util.EmptyOr(c.TCPMuxKeepaliveInterval, 60)
+	c.TCPMuxKeepaliveInterval = util.EmptyOr(c.TCPMuxKeepaliveInterval, 30)
 	c.TCPKeepAlive = util.EmptyOr(c.TCPKeepAlive, 7200)
 	c.MaxPoolCount = util.EmptyOr(c.MaxPoolCount, 5)
-	c.HeartbeatTimeout = util.EmptyOr(c.HeartbeatTimeout, 90)
+	if lo.FromPtr(c.TCPMux) {
+		// If TCPMux is enabled, heartbeat of application layer is unnecessary because we can rely on heartbeat in tcpmux.
+		c.HeartbeatTimeout = util.EmptyOr(c.HeartbeatTimeout, -1)
+	} else {
+		c.HeartbeatTimeout = util.EmptyOr(c.HeartbeatTimeout, 90)
+	}
 	c.QUIC.Complete()
 	if c.TLS.TrustedCaFile != "" {
 		c.TLS.Force = true
@@ -188,4 +215,15 @@ type TLSServerConfig struct {
 	Force bool `json:"force,omitempty"`
 
 	TLSConfig
+}
+
+type SSHTunnelGateway struct {
+	BindPort              int    `json:"bindPort,omitempty"`
+	PrivateKeyFile        string `json:"privateKeyFile,omitempty"`
+	AutoGenPrivateKeyPath string `json:"autoGenPrivateKeyPath,omitempty"`
+	AuthorizedKeysFile    string `json:"authorizedKeysFile,omitempty"`
+}
+
+func (c *SSHTunnelGateway) Complete() {
+	c.AutoGenPrivateKeyPath = util.EmptyOr(c.AutoGenPrivateKeyPath, "./.autogen_ssh_key")
 }

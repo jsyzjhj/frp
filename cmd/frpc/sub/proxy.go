@@ -17,10 +17,11 @@ package sub
 import (
 	"fmt"
 	"os"
+	"slices"
 
-	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 
+	"github.com/fatedier/frp/pkg/config"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/config/v1/validation"
 )
@@ -50,17 +51,17 @@ func init() {
 		}
 		clientCfg := v1.ClientCommonConfig{}
 		cmd := NewProxyCommand(string(typ), c, &clientCfg)
-		RegisterClientCommonConfigFlags(cmd, &clientCfg)
-		RegisterProxyFlags(cmd, c)
+		config.RegisterClientCommonConfigFlags(cmd, &clientCfg)
+		config.RegisterProxyFlags(cmd, c)
 
 		// add sub command for visitor
-		if lo.Contains(visitorTypes, v1.VisitorType(typ)) {
+		if slices.Contains(visitorTypes, v1.VisitorType(typ)) {
 			vc := v1.NewVisitorConfigurerByType(v1.VisitorType(typ))
 			if vc == nil {
 				panic("visitor type: " + typ + " not support")
 			}
 			visitorCmd := NewVisitorCommand(string(typ), vc, &clientCfg)
-			RegisterVisitorFlags(visitorCmd, vc)
+			config.RegisterVisitorFlags(visitorCmd, vc)
 			cmd.AddCommand(visitorCmd)
 		}
 		rootCmd.AddCommand(cmd)
@@ -72,7 +73,10 @@ func NewProxyCommand(name string, c v1.ProxyConfigurer, clientCfg *v1.ClientComm
 		Use:   name,
 		Short: fmt.Sprintf("Run frpc with a single %s proxy", name),
 		Run: func(cmd *cobra.Command, args []string) {
-			clientCfg.Complete()
+			if err := clientCfg.Complete(); err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
 			if _, err := validation.ValidateClientCommonConfig(clientCfg); err != nil {
 				fmt.Println(err)
 				os.Exit(1)
@@ -98,7 +102,10 @@ func NewVisitorCommand(name string, c v1.VisitorConfigurer, clientCfg *v1.Client
 		Use:   "visitor",
 		Short: fmt.Sprintf("Run frpc with a single %s visitor", name),
 		Run: func(cmd *cobra.Command, args []string) {
-			clientCfg.Complete()
+			if err := clientCfg.Complete(); err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
 			if _, err := validation.ValidateClientCommonConfig(clientCfg); err != nil {
 				fmt.Println(err)
 				os.Exit(1)

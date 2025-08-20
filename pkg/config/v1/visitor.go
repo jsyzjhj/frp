@@ -15,6 +15,7 @@
 package v1
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,9 @@ type VisitorBaseConfig struct {
 	// It can be less than 0, it means don't bind to the port and only receive connections redirected from
 	// other visitors. (This is not supported for SUDP now)
 	BindPort int `json:"bindPort,omitempty"`
+
+	// Plugin specifies what plugin should be used.
+	Plugin TypedVisitorPluginOptions `json:"plugin,omitempty"`
 }
 
 func (c *VisitorBaseConfig) GetBaseConfig() *VisitorBaseConfig {
@@ -108,11 +112,19 @@ func (c *TypedVisitorConfig) UnmarshalJSON(b []byte) error {
 	if configurer == nil {
 		return fmt.Errorf("unknown visitor type: %s", typeStruct.Type)
 	}
-	if err := json.Unmarshal(b, configurer); err != nil {
-		return err
+	decoder := json.NewDecoder(bytes.NewBuffer(b))
+	if DisallowUnknownFields {
+		decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(configurer); err != nil {
+		return fmt.Errorf("unmarshal VisitorConfig error: %v", err)
 	}
 	c.VisitorConfigurer = configurer
 	return nil
+}
+
+func (c *TypedVisitorConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(c.VisitorConfigurer)
 }
 
 func NewVisitorConfigurerByType(t VisitorType) VisitorConfigurer {
@@ -120,7 +132,9 @@ func NewVisitorConfigurerByType(t VisitorType) VisitorConfigurer {
 	if !ok {
 		return nil
 	}
-	return reflect.New(v).Interface().(VisitorConfigurer)
+	vc := reflect.New(v).Interface().(VisitorConfigurer)
+	vc.GetBaseConfig().Type = string(t)
+	return vc
 }
 
 var _ VisitorConfigurer = &STCPVisitorConfig{}

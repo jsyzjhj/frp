@@ -27,6 +27,7 @@ import (
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/transport"
 	"github.com/fatedier/frp/pkg/util/xlog"
+	"github.com/fatedier/frp/pkg/vnet"
 )
 
 type Manager struct {
@@ -35,7 +36,8 @@ type Manager struct {
 	visitors  map[string]Visitor
 	helper    Helper
 
-	checkInterval time.Duration
+	checkInterval           time.Duration
+	keepVisitorsRunningOnce sync.Once
 
 	mu  sync.RWMutex
 	ctx context.Context
@@ -49,6 +51,7 @@ func NewManager(
 	clientCfg *v1.ClientCommonConfig,
 	connectServer func() (net.Conn, error),
 	msgTransporter transport.MessageTransporter,
+	vnetController *vnet.Controller,
 ) *Manager {
 	m := &Manager{
 		clientCfg:     clientCfg,
@@ -61,13 +64,16 @@ func NewManager(
 	m.helper = &visitorHelperImpl{
 		connectServerFn: connectServer,
 		msgTransporter:  msgTransporter,
+		vnetController:  vnetController,
 		transferConnFn:  m.TransferConn,
 		runID:           runID,
 	}
 	return m
 }
 
-func (vm *Manager) Run() {
+// keepVisitorsRunning checks all visitors' status periodically, if some visitor is not running, start it.
+// It will only start after Reload is called and a new visitor is added.
+func (vm *Manager) keepVisitorsRunning() {
 	xl := xlog.FromContextSafe(vm.ctx)
 
 	ticker := time.NewTicker(vm.checkInterval)
@@ -76,14 +82,14 @@ func (vm *Manager) Run() {
 	for {
 		select {
 		case <-vm.stopCh:
-			xl.Info("gracefully shutdown visitor manager")
+			xl.Tracef("gracefully shutdown visitor manager")
 			return
 		case <-ticker.C:
 			vm.mu.Lock()
 			for _, cfg := range vm.cfgs {
 				name := cfg.GetBaseConfig().Name
 				if _, exist := vm.visitors[name]; !exist {
-					xl.Info("try to start visitor [%s]", name)
+					xl.Infof("try to start visitor [%s]", name)
 					_ = vm.startVisitor(cfg)
 				}
 			}
@@ -109,18 +115,29 @@ func (vm *Manager) Close() {
 func (vm *Manager) startVisitor(cfg v1.VisitorConfigurer) (err error) {
 	xl := xlog.FromContextSafe(vm.ctx)
 	name := cfg.GetBaseConfig().Name
-	visitor := NewVisitor(vm.ctx, cfg, vm.clientCfg, vm.helper)
+	visitor, err := NewVisitor(vm.ctx, cfg, vm.clientCfg, vm.helper)
+	if err != nil {
+		xl.Warnf("new visitor error: %v", err)
+		return
+	}
 	err = visitor.Run()
 	if err != nil {
-		xl.Warn("start error: %v", err)
+		xl.Warnf("start error: %v", err)
 	} else {
 		vm.visitors[name] = visitor
-		xl.Info("start visitor success")
+		xl.Infof("start visitor success")
 	}
 	return
 }
 
-func (vm *Manager) Reload(cfgs []v1.VisitorConfigurer) {
+func (vm *Manager) UpdateAll(cfgs []v1.VisitorConfigurer) {
+	if len(cfgs) > 0 {
+		// Only start keepVisitorsRunning goroutine once and only when there is at least one visitor.
+		vm.keepVisitorsRunningOnce.Do(func() {
+			go vm.keepVisitorsRunning()
+		})
+	}
+
 	xl := xlog.FromContextSafe(vm.ctx)
 	cfgsMap := lo.KeyBy(cfgs, func(c v1.VisitorConfigurer) string {
 		return c.GetBaseConfig().Name
@@ -146,7 +163,7 @@ func (vm *Manager) Reload(cfgs []v1.VisitorConfigurer) {
 		}
 	}
 	if len(delNames) > 0 {
-		xl.Info("visitor removed: %v", delNames)
+		xl.Infof("visitor removed: %v", delNames)
 	}
 
 	addNames := make([]string, 0)
@@ -159,7 +176,7 @@ func (vm *Manager) Reload(cfgs []v1.VisitorConfigurer) {
 		}
 	}
 	if len(addNames) > 0 {
-		xl.Info("visitor added: %v", addNames)
+		xl.Infof("visitor added: %v", addNames)
 	}
 }
 
@@ -177,6 +194,7 @@ func (vm *Manager) TransferConn(name string, conn net.Conn) error {
 type visitorHelperImpl struct {
 	connectServerFn func() (net.Conn, error)
 	msgTransporter  transport.MessageTransporter
+	vnetController  *vnet.Controller
 	transferConnFn  func(name string, conn net.Conn) error
 	runID           string
 }
@@ -191,6 +209,10 @@ func (v *visitorHelperImpl) TransferConn(name string, conn net.Conn) error {
 
 func (v *visitorHelperImpl) MsgTransporter() transport.MessageTransporter {
 	return v.msgTransporter
+}
+
+func (v *visitorHelperImpl) VNetController() *vnet.Controller {
+	return v.vnetController
 }
 
 func (v *visitorHelperImpl) RunID() string {

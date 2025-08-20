@@ -48,9 +48,13 @@ var natholeDiscoveryCmd = &cobra.Command{
 	Short: "Discover nathole information from stun server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// ignore error here, because we can use command line pameters
-		cfg, _, _, _, err := config.LoadClientConfig(cfgFile)
+		cfg, _, _, _, err := config.LoadClientConfig(cfgFile, strictConfigMode)
 		if err != nil {
 			cfg = &v1.ClientCommonConfig{}
+			if err := cfg.Complete(); err != nil {
+				fmt.Printf("failed to complete config: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		if natHoleSTUNServer != "" {
 			cfg.NatHoleSTUNServer = natHoleSTUNServer

@@ -2,14 +2,47 @@
 
 [![Build Status](https://circleci.com/gh/fatedier/frp.svg?style=shield)](https://circleci.com/gh/fatedier/frp)
 [![GitHub release](https://img.shields.io/github/tag/fatedier/frp.svg?label=release)](https://github.com/fatedier/frp/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/fatedier/frp)](https://goreportcard.com/report/github.com/fatedier/frp)
+[![GitHub Releases Stats](https://img.shields.io/github/downloads/fatedier/frp/total.svg?logo=github)](https://somsubhra.github.io/github-release-stats/?username=fatedier&repository=frp)
 
 [README](README.md) | [中文文档](README_zh.md)
+
+## Sponsors
+
+frp is an open source project with its ongoing development made possible entirely by the support of our awesome sponsors. If you'd like to join them, please consider [sponsoring frp's development](https://github.com/sponsors/fatedier).
 
 <h3 align="center">Gold Sponsors</h3>
 <!--gold sponsors start-->
 <p align="center">
-  <a href="https://workos.com/?utm_campaign=github_repo&utm_medium=referral&utm_content=frp&utm_source=github" target="_blank">
-    <img width="350px" src="https://raw.githubusercontent.com/fatedier/frp/dev/doc/pic/sponsor_workos.png">
+  <a href="https://go.warp.dev/frp" target="_blank">
+    <img width="360px" src="https://raw.githubusercontent.com/warpdotdev/brand-assets/refs/heads/main/Github/Sponsor/Warp-Github-LG-01.png">
+    <br>
+    <b>Warp, the intelligent terminal</b>
+    <br>
+	<sub>Available for macOS, Linux and Windows</sub>
+  </a>
+</p>
+<p align="center">
+  <a href="https://jb.gg/frp" target="_blank">
+    <img width="420px" src="https://raw.githubusercontent.com/fatedier/frp/dev/doc/pic/sponsor_jetbrains.jpg">
+	<br>
+	<b>The complete IDE crafted for professional Go developers</b>
+  </a>
+</p>
+<p align="center">
+  <a href="https://github.com/daytonaio/daytona" target="_blank">
+    <img width="420px" src="https://raw.githubusercontent.com/fatedier/frp/dev/doc/pic/sponsor_daytona.png">
+	<br>
+	<b>Secure and Elastic Infrastructure for Running Your AI-Generated Code</b>
+  </a>
+</p>
+<p align="center">
+  <a href="https://github.com/beclab/Olares" target="_blank">
+    <img width="420px" src="https://raw.githubusercontent.com/fatedier/frp/dev/doc/pic/sponsor_olares.jpeg">
+	<br>
+	<b>The sovereign cloud that puts you in control</b>
+	<br>
+	<sub>An open source, self-hosted alternative to public clouds, built for data ownership and privacy</sub>
   </a>
 </p>
 <!--gold sponsors end-->
@@ -42,7 +75,7 @@ frp also offers a P2P connect mode.
     * [Using Environment Variables](#using-environment-variables)
     * [Split Configures Into Different Files](#split-configures-into-different-files)
     * [Server Dashboard](#server-dashboard)
-    * [Admin UI](#admin-ui)
+    * [Client Admin UI](#client-admin-ui)
     * [Monitor](#monitor)
         * [Prometheus](#prometheus)
     * [Authenticating the Client](#authenticating-the-client)
@@ -71,9 +104,17 @@ frp also offers a P2P connect mode.
     * [Custom Subdomain Names](#custom-subdomain-names)
     * [URL Routing](#url-routing)
     * [TCP Port Multiplexing](#tcp-port-multiplexing)
-    * [Connecting to frps via HTTP PROXY](#connecting-to-frps-via-http-proxy)
+    * [Connecting to frps via PROXY](#connecting-to-frps-via-proxy)
+    * [Port range mapping](#port-range-mapping)
     * [Client Plugins](#client-plugins)
     * [Server Manage Plugins](#server-manage-plugins)
+    * [SSH Tunnel Gateway](#ssh-tunnel-gateway)
+    * [Virtual Network (VirtualNet)](#virtual-network-virtualnet)
+* [Feature Gates](#feature-gates)
+    * [Available Feature Gates](#available-feature-gates)
+    * [Enabling Feature Gates](#enabling-feature-gates)
+    * [Feature Lifecycle](#feature-lifecycle)
+* [Related Projects](#related-projects)
 * [Contributing](#contributing)
 * [Donation](#donation)
     * [GitHub Sponsors](#github-sponsors)
@@ -196,11 +237,11 @@ This example implements multiple SSH services exposed through the same port usin
 
 4. To access internal machine A using SSH ProxyCommand, assuming the username is "test":
 
-  `ssh -o 'proxycommand socat - PROXY:x.x.x.x:machine-a.example.com:22,proxyport=5002' test@machine-a`
+  `ssh -o 'proxycommand socat - PROXY:x.x.x.x:%h:%p,proxyport=5002' test@machine-a.example.com`
 
 5. To access internal machine B, the only difference is the domain name, assuming the username is "test":
 
-  `ssh -o 'proxycommand socat - PROXY:x.x.x.x:machine-b.example.com:22,proxyport=5002' test@machine-b`
+  `ssh -o 'proxycommand socat - PROXY:x.x.x.x:%h:%p,proxyport=5002' test@machine-b.example.com`
 
 ### Accessing Internal Web Services with Custom Domains in LAN
 
@@ -343,7 +384,6 @@ You may substitute `https2https` for the plugin, and point the `localAddr` to a 
   # frpc.toml
   serverAddr = "x.x.x.x"
   serverPort = 7000
-  vhostHTTPSPort = 443
 
   [[proxies]]
   name = "test_https2http"
@@ -505,6 +545,7 @@ includes = ["./confd/*.toml"]
 
 ```toml
 # ./confd/test.toml
+
 [[proxies]]
 name = "ssh"
 type = "tcp"
@@ -520,6 +561,8 @@ Check frp's status and proxies' statistics information by Dashboard.
 Configure a port for dashboard to enable this feature:
 
 ```toml
+# The default value is 127.0.0.1. Change it to 0.0.0.0 when you want to access it from a public network.
+webServer.addr = "0.0.0.0"
 webServer.port = 7500
 # dashboard's username and password are both optional
 webServer.user = "admin"
@@ -586,6 +629,21 @@ When specifying `auth.method = "token"` in `frpc.toml` and `frps.toml` - token b
 
 Make sure to specify the same `auth.token` in `frps.toml` and `frpc.toml` for frpc to pass frps validation
 
+##### Token Source
+
+frp supports reading authentication tokens from external sources using the `tokenSource` configuration. Currently, file-based token source is supported.
+
+**File-based token source:**
+
+```toml
+# frpc.toml
+auth.method = "token"
+auth.tokenSource.type = "file"
+auth.tokenSource.file.path = "/path/to/token/file"
+```
+
+The token will be read from the specified file at startup. This is useful for scenarios where tokens are managed by external systems or need to be kept separate from configuration files for security reasons.
+
 #### OIDC Authentication
 
 When specifying `auth.method = "oidc"` in `frpc.toml` and `frps.toml` - OIDC based authentication will be used.
@@ -616,6 +674,7 @@ The features are off by default. You can turn on encryption and/or compression:
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "ssh"
 type = "tcp"
@@ -771,6 +830,7 @@ We would like to try to allow multiple proxies bind a same remote port with diff
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "ssh"
 type = "tcp"
@@ -791,7 +851,7 @@ You can disable this feature by modify `frps.toml` and `frpc.toml`:
 
 ```toml
 # frps.toml and frpc.toml, must be same
-tcpMux = false
+transport.tcpMux = false
 ```
 
 ### Support KCP Protocol
@@ -876,6 +936,7 @@ This feature is only available for types `tcp`, `http`, `tcpmux` now.
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "test1"
 type = "tcp"
@@ -911,6 +972,7 @@ With health check type **tcp**, the service port will be pinged (TCPing):
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "test1"
 type = "tcp"
@@ -930,6 +992,7 @@ With health check type **http**, an HTTP request will be sent to the service and
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "web"
 type = "http"
@@ -954,6 +1017,7 @@ However, speaking of web servers and HTTP requests, your web server might rely o
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "web"
 type = "http"
@@ -966,10 +1030,11 @@ The HTTP request will have the `Host` header rewritten to `Host: dev.example.com
 
 ### Setting other HTTP Headers
 
-Similar to `Host`, You can override other HTTP request headers with proxy type `http`.
+Similar to `Host`, You can override other HTTP request and response headers with proxy type `http`.
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "web"
 type = "http"
@@ -977,26 +1042,28 @@ localPort = 80
 customDomains = ["test.example.com"]
 hostHeaderRewrite = "dev.example.com"
 requestHeaders.set.x-from-where = "frp"
+responseHeaders.set.foo = "bar"
 ```
 
-In this example, it will set header `x-from-where: frp` in the HTTP request.
+In this example, it will set header `x-from-where: frp` in the HTTP request and `foo: bar` in the HTTP response.
 
 ### Get Real IP
 
 #### HTTP X-Forwarded-For
 
-This feature is for http proxy only.
+This feature is for `http` proxies or proxies with the `https2http` and `https2https` plugins enabled.
 
 You can get user's real IP from HTTP request headers `X-Forwarded-For`.
 
 #### Proxy Protocol
 
-frp supports Proxy Protocol to send user's real IP to local services. It support all types except UDP.
+frp supports Proxy Protocol to send user's real IP to local services.
 
 Here is an example for https service:
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "web"
 type = "https"
@@ -1019,6 +1086,7 @@ It can only be enabled when proxy type is http.
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "web"
 type = "http"
@@ -1043,6 +1111,7 @@ Resolve `*.frps.com` to the frps server's IP. This is usually called a Wildcard 
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "web"
 type = "http"
@@ -1062,6 +1131,7 @@ frp supports forwarding HTTP requests to different backend web services by url r
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "web01"
 type = "http"
@@ -1137,6 +1207,24 @@ serverPort = 7000
 transport.proxyURL = "http://user:pwd@192.168.1.128:8080"
 ```
 
+### Port range mapping
+
+*Added in v0.56.0*
+
+We can use the range syntax of Go template combined with the built-in `parseNumberRangePair` function to achieve port range mapping.
+
+The following example, when run, will create 8 proxies named `test-6000, test-6001 ... test-6007`, each mapping the remote port to the local port.
+
+```
+{{- range $_, $v := parseNumberRangePair "6000-6006,6007" "6000-6006,6007" }}
+[[proxies]]
+name = "tcp-{{ $v.First }}"
+type = "tcp"
+localPort = {{ $v.First }}
+remotePort = {{ $v.Second }}
+{{- end }}
+```
+
 ### Client Plugins
 
 frpc only forwards requests to local TCP or UDP ports by default.
@@ -1147,6 +1235,7 @@ Using plugin **http_proxy**:
 
 ```toml
 # frpc.toml
+
 [[proxies]]
 name = "http_proxy"
 type = "tcp"
@@ -1164,6 +1253,82 @@ httpPassword = "abc"
 Read the [document](/doc/server_plugin.md).
 
 Find more plugins in [gofrp/plugin](https://github.com/gofrp/plugin).
+
+### SSH Tunnel Gateway
+
+*added in v0.53.0*
+
+frp supports listening to an SSH port on the frps side and achieves TCP protocol proxying through the SSH -R protocol, without relying on frpc.
+
+```toml
+# frps.toml
+sshTunnelGateway.bindPort = 2200
+```
+
+When running `./frps -c frps.toml`, a private key file named `.autogen_ssh_key` will be automatically created in the current working directory. This generated private key file will be used by the SSH server in frps.
+
+Executing the command
+
+```bash
+ssh -R :80:127.0.0.1:8080 v0@{frp address} -p 2200 tcp --proxy_name "test-tcp" --remote_port 9090
+```
+
+sets up a proxy on frps that forwards the local 8080 service to the port 9090.
+
+```bash
+frp (via SSH) (Ctrl+C to quit)
+
+User:
+ProxyName: test-tcp
+Type: tcp
+RemoteAddress: :9090
+```
+
+This is equivalent to:
+
+```bash
+frpc tcp --proxy_name "test-tcp" --local_ip 127.0.0.1 --local_port 8080 --remote_port 9090
+```
+
+Please refer to this [document](/doc/ssh_tunnel_gateway.md) for more information.
+
+### Virtual Network (VirtualNet)
+
+*Alpha feature added in v0.62.0*
+
+The VirtualNet feature enables frp to create and manage virtual network connections between clients and visitors through a TUN interface. This allows for IP-level routing between machines, extending frp beyond simple port forwarding to support full network connectivity.
+
+For detailed information about configuration and usage, please refer to the [VirtualNet documentation](/doc/virtual_net.md).
+
+## Feature Gates
+
+frp supports feature gates to enable or disable experimental features. This allows users to try out new features before they're considered stable.
+
+### Available Feature Gates
+
+| Name | Stage | Default | Description |
+|------|-------|---------|-------------|
+| VirtualNet | ALPHA | false | Virtual network capabilities for frp |
+
+### Enabling Feature Gates
+
+To enable an experimental feature, add the feature gate to your configuration:
+
+```toml
+featureGates = { VirtualNet = true }
+```
+
+### Feature Lifecycle
+
+Features typically go through three stages:
+1. **ALPHA**: Disabled by default, may be unstable
+2. **BETA**: May be enabled by default, more stable but still evolving
+3. **GA (Generally Available)**: Enabled by default, ready for production use
+
+## Related Projects
+
+* [gofrp/plugin](https://github.com/gofrp/plugin) - A repository for frp plugins that contains a variety of plugins implemented based on the frp extension mechanism, meeting the customization needs of different scenarios.
+* [gofrp/tiny-frpc](https://github.com/gofrp/tiny-frpc) - A lightweight version of the frp client (around 3.5MB at minimum) implemented using the ssh protocol, supporting some of the most commonly used features, suitable for devices with limited resources.
 
 ## Contributing
 

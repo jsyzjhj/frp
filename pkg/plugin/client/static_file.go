@@ -12,18 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package plugin
+//go:build !frps
+
+package client
 
 import (
-	"io"
-	"net"
+	"context"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/mux"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
-	utilnet "github.com/fatedier/frp/pkg/util/net"
+	netpkg "github.com/fatedier/frp/pkg/util/net"
 )
 
 func init() {
@@ -37,7 +38,7 @@ type StaticFilePlugin struct {
 	s *http.Server
 }
 
-func NewStaticFilePlugin(options v1.ClientPluginOptions) (Plugin, error) {
+func NewStaticFilePlugin(_ PluginContext, options v1.ClientPluginOptions) (Plugin, error) {
 	opts := options.(*v1.StaticFilePluginOptions)
 
 	listener := NewProxyListener()
@@ -55,10 +56,11 @@ func NewStaticFilePlugin(options v1.ClientPluginOptions) (Plugin, error) {
 	}
 
 	router := mux.NewRouter()
-	router.Use(utilnet.NewHTTPAuthMiddleware(opts.HTTPUser, opts.HTTPPassword).SetAuthFailDelay(200 * time.Millisecond).Middleware)
-	router.PathPrefix(prefix).Handler(utilnet.MakeHTTPGzipHandler(http.StripPrefix(prefix, http.FileServer(http.Dir(opts.LocalPath))))).Methods("GET")
+	router.Use(netpkg.NewHTTPAuthMiddleware(opts.HTTPUser, opts.HTTPPassword).SetAuthFailDelay(200 * time.Millisecond).Middleware)
+	router.PathPrefix(prefix).Handler(netpkg.MakeHTTPGzipHandler(http.StripPrefix(prefix, http.FileServer(http.Dir(opts.LocalPath))))).Methods("GET")
 	sp.s = &http.Server{
-		Handler: router,
+		Handler:           router,
+		ReadHeaderTimeout: 60 * time.Second,
 	}
 	go func() {
 		_ = sp.s.Serve(listener)
@@ -66,8 +68,8 @@ func NewStaticFilePlugin(options v1.ClientPluginOptions) (Plugin, error) {
 	return sp, nil
 }
 
-func (sp *StaticFilePlugin) Handle(conn io.ReadWriteCloser, realConn net.Conn, _ *ExtraInfo) {
-	wrapConn := utilnet.WrapReadWriteCloserToConn(conn, realConn)
+func (sp *StaticFilePlugin) Handle(_ context.Context, connInfo *ConnectionInfo) {
+	wrapConn := netpkg.WrapReadWriteCloserToConn(connInfo.Conn, connInfo.UnderlyingConn)
 	_ = sp.l.PutConn(wrapConn)
 }
 

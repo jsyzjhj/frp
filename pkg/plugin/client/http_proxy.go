@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package plugin
+//go:build !frps
+
+package client
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"io"
 	"net"
@@ -27,7 +30,7 @@ import (
 	libnet "github.com/fatedier/golib/net"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
-	utilnet "github.com/fatedier/frp/pkg/util/net"
+	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
 )
 
@@ -42,7 +45,7 @@ type HTTPProxy struct {
 	s *http.Server
 }
 
-func NewHTTPProxyPlugin(options v1.ClientPluginOptions) (Plugin, error) {
+func NewHTTPProxyPlugin(_ PluginContext, options v1.ClientPluginOptions) (Plugin, error) {
 	opts := options.(*v1.HTTPProxyPluginOptions)
 	listener := NewProxyListener()
 
@@ -52,7 +55,8 @@ func NewHTTPProxyPlugin(options v1.ClientPluginOptions) (Plugin, error) {
 	}
 
 	hp.s = &http.Server{
-		Handler: hp,
+		Handler:           hp,
+		ReadHeaderTimeout: 60 * time.Second,
 	}
 
 	go func() {
@@ -65,8 +69,8 @@ func (hp *HTTPProxy) Name() string {
 	return v1.PluginHTTPProxy
 }
 
-func (hp *HTTPProxy) Handle(conn io.ReadWriteCloser, realConn net.Conn, _ *ExtraInfo) {
-	wrapConn := utilnet.WrapReadWriteCloserToConn(conn, realConn)
+func (hp *HTTPProxy) Handle(_ context.Context, connInfo *ConnectionInfo) {
+	wrapConn := netpkg.WrapReadWriteCloserToConn(connInfo.Conn, connInfo.UnderlyingConn)
 
 	sc, rd := libnet.NewSharedConn(wrapConn)
 	firstBytes := make([]byte, 7)
